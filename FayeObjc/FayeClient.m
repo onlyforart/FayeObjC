@@ -115,6 +115,7 @@
 
 -(void)webSocket:(SRWebSocket *)webSocket didFailWithError:(NSError *)error {
   NSLog(@"WebSocket error: %@", [error localizedDescription]);
+  [delegate socketDidFailWithError:error];
 }
 
 -(void)webSocket:(SRWebSocket *)webSocket didReceiveMessage:(NSString*)message {

@@ -51,6 +51,7 @@ enum _fayeStates {
 - (void)connectedToServer;
 - (void)disconnectedFromServer;
 @optional
+- (void)socketDidFailWithError:(NSError *)error;
 - (void)socketDidSendMessage:(id)aWebSocket;
 - (void)subscriptionFailedWithError:(NSString *)error;
 - (void)subscribedToChannel:(NSString *)channel;
