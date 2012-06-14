@@ -21,6 +21,9 @@
  THE SOFTWARE. */
 
 //
+// MODIFIED FOR USE WITH SMT apps - do NOT use original version without merging my changes
+//
+//
 //  FayeClient.h
 //  FayeObjC
 //
@@ -44,17 +47,21 @@ enum _fayeStates {
 #define DISCONNECT_CHANNEL @"/meta/disconnect"
 #define SUBSCRIBE_CHANNEL @"/meta/subscribe"
 #define UNSUBSCRIBE_CHANNEL @"/meta/unsubscribe"
+ 
+ // NEED TO CHANGE THIS to allow multiple subscriptions!
 
 @protocol FayeClientDelegate <NSObject>
 
-- (void)messageReceived:(NSDictionary *)messageDict;
+- (void)messageReceived:(NSDictionary *)messageDict forChannel:(NSString *)channel;
 - (void)connectedToServer;
 - (void)disconnectedFromServer;
+- (void)connectionFailedWithError;
 @optional
-- (void)socketDidFailWithError:(NSError *)error;
+- (void)messageReceived:(NSDictionary *)messageDict;
 - (void)socketDidSendMessage:(id)aWebSocket;
 - (void)subscriptionFailedWithError:(NSString *)error;
 - (void)subscribedToChannel:(NSString *)channel;
+- (void)notifyConnectionError:(NSString *)error;
 
 @end
 
@@ -76,7 +83,10 @@ enum _fayeStates {
 - (void) connectToServer;
 - (void) connectToServerWithExt:(NSDictionary *)extension;
 - (void) disconnectFromServer;
+- (void) publish:(NSDictionary *)messageDict toChannel:(NSString *)channel withExt:(NSDictionary *)extension;
 - (void) sendMessage:(NSDictionary *)messageDict;
 - (void) sendMessage:(NSDictionary *)messageDict withExt:(NSDictionary *)extension;
+- (void) subscribeToChannel:(NSString *)channel;
+- (void) unsubscribeFromChannel:(NSString *)channel;
 
 @end

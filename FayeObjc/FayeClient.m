@@ -21,6 +21,9 @@
  THE SOFTWARE. */
 
 //
+// MODIFIED FOR USE WITH SMT apps - do NOT use original version without merging my changes
+//
+//
 //  FayeClient.m
 //  FayeObjC
 //
@@ -101,6 +104,58 @@
 - (void) sendMessage:(NSDictionary *)messageDict withExt:(NSDictionary *)extension {
   [self publish:messageDict withExt:extension];
 }
+ 
+- (void) subscribeToChannel:(NSString *)channel {
+  NSDictionary *dict = nil;
+  if(nil == self.connectionExtension) {
+    dict = [NSDictionary dictionaryWithObjectsAndKeys:SUBSCRIBE_CHANNEL, @"channel", self.fayeClientId, @"clientId", channel, @"subscription", nil];
+  } else {
+    dict = [NSDictionary dictionaryWithObjectsAndKeys:SUBSCRIBE_CHANNEL, @"channel", self.fayeClientId, @"clientId", channel, @"subscription", self.connectionExtension, @"ext", nil];
+  }
+  
+  NSError *error = NULL;
+  NSData *data = [NSJSONSerialization dataWithJSONObject:dict options:0 error:&error];
+  if (data) {
+    NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    [webSocket send:json];
+  } else {
+    NSLog(@"Could not serialize to JSON (%@)", [error localizedDescription]);
+  }
+}
+
+- (void) unsubscribeFromChannel:(NSString *)channel {
+  NSDictionary *dict = [NSDictionary dictionaryWithObjectsAndKeys:UNSUBSCRIBE_CHANNEL, @"channel", self.fayeClientId, @"clientId", channel, @"subscription", nil];
+  NSError *error = NULL;
+  NSData *data = [NSJSONSerialization dataWithJSONObject:dict options:0 error:&error];
+  if (data) {
+    NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    [webSocket send:json];
+  } else {
+    NSLog(@"Could not serialize to JSON (%@)", [error localizedDescription]);
+  }
+}
+
+- (void) publish:(NSDictionary *)messageDict toChannel:(NSString *)channel withExt:(NSDictionary *)extension {
+  NSString *messageId = [NSString stringWithFormat:@"msg_%d_%d", [[NSDate date] timeIntervalSince1970], 1];
+  NSDictionary *dict = nil;
+  
+  if(nil == extension) {
+    dict = [NSDictionary dictionaryWithObjectsAndKeys:channel, @"channel", self.fayeClientId, @"clientId", messageDict, @"data", messageId, @"id", nil];
+  } else {
+    dict = [NSDictionary dictionaryWithObjectsAndKeys:channel, @"channel", self.fayeClientId, @"clientId", messageDict, @"data", messageId, @"id", extension, @"ext",nil];
+  }
+  
+  NSError *error = NULL;
+  NSData *data = [NSJSONSerialization dataWithJSONObject:dict options:0 error:&error];
+  if (data) {
+    NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    [webSocket send:json];
+  } else {
+    NSLog(@"Could not serialize to JSON (%@)", [error localizedDescription]);
+  }
+}
+
+
 
 #pragma mark -
 #pragma mark WebSocket Delegate
@@ -115,7 +170,10 @@
 
 -(void)webSocket:(SRWebSocket *)webSocket didFailWithError:(NSError *)error {
   NSLog(@"WebSocket error: %@", [error localizedDescription]);
-  [delegate socketDidFailWithError:error];
+  // should propagate the error, drop the connection, and reconnect
+  if(self.delegate != NULL && [self.delegate respondsToSelector:@selector(connectionFailedWithError)]) {
+    [self.delegate connectionFailedWithError];
+  }  
 }
 
 -(void)webSocket:(SRWebSocket *)webSocket didReceiveMessage:(NSString*)message {
@@ -223,6 +281,9 @@
  "subscription": "/foo/..."
  }
  */
+ 
+ // NEED TO CHANGE THIS to allow multiple subscriptions!
+ 
 - (void) subscribe {
   NSDictionary *dict = nil;
   if(nil == self.connectionExtension) {
@@ -297,64 +358,88 @@
   NSError *error = NULL;
   NSArray *messageArray = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
   if (messageArray == nil) {
-    NSLog(@"Could not deserialize JSON (%@)", [error localizedDescription]);
+        NSLog(@"Could not deserialize JSON (%@)", [error localizedDescription]);
+        if (self.delegate != NULL && [self.delegate respondsToSelector:@selector(notifyConnectionError:)]) {          
+            [self.delegate notifyConnectionError:@"Could not deserialize JSON"];
+        }
+  } else {
+      for (NSDictionary *messageDict in messageArray) {
+        if ([messageDict isKindOfClass:[NSDictionary class]]) {
+            FayeMessage *fm = [[FayeMessage alloc] initWithDict:messageDict];    
+            
+            if ([fm.channel isEqualToString:HANDSHAKE_CHANNEL]) {    
+              if ([fm.successful boolValue]) {
+                self.fayeClientId = fm.clientId;        
+                if(self.delegate != NULL && [self.delegate respondsToSelector:@selector(connectedToServer)]) {
+                  [self.delegate connectedToServer];
+                }
+                [self connect];  
+                // try to sub right after conn      
+                [self subscribe];
+              } else {
+                NSLog(@"ERROR WITH HANDSHAKE");
+                if(self.delegate != NULL && [self.delegate respondsToSelector:@selector(connectionFailedWithError)]) {
+                  [self.delegate connectionFailedWithError];
+                }
+              }    
+            } else if ([fm.channel isEqualToString:CONNECT_CHANNEL]) {      
+              if ([fm.successful boolValue]) {        
+                fayeConnected = YES;
+                [self connect];
+              } else {
+                NSLog(@"ERROR CONNECTING TO FAYE");
+                if(self.delegate != NULL && [self.delegate respondsToSelector:@selector(connectionFailedWithError)]) {
+                  [self.delegate connectionFailedWithError];
+                }
+              }
+            } else if ([fm.channel isEqualToString:DISCONNECT_CHANNEL]) {
+              if ([fm.successful boolValue]) {        
+                fayeConnected = NO;  
+                [self closeWebSocketConnection];
+              } else {
+                NSLog(@"ERROR DISCONNECTING FROM FAYE");
+                if (self.delegate != NULL && [self.delegate respondsToSelector:@selector(notifyConnectionError:)]) {          
+                    [self.delegate notifyConnectionError:@"Faye disconnection error"];
+                }
+              }
+              if(self.delegate != NULL && [self.delegate respondsToSelector:@selector(disconnectedFromServer)]) {
+                [self.delegate disconnectedFromServer];
+              }
+            } else if ([fm.channel isEqualToString:SUBSCRIBE_CHANNEL]) {      
+              if ([fm.successful boolValue]) {
+                NSLog(@"SUBSCRIBED TO CHANNEL %@ ON FAYE", fm.subscription);        
+                if(self.delegate != NULL && [self.delegate respondsToSelector:@selector(subscribedToChannel:)]) {
+                    [self.delegate subscribedToChannel:fm.subscription];
+                }
+              } else {
+                NSLog(@"ERROR SUBSCRIBING TO %@ WITH ERROR %@", fm.subscription, fm.error);
+                if(self.delegate != NULL && [self.delegate respondsToSelector:@selector(subscriptionFailedWithError:)]) {          
+                  [self.delegate subscriptionFailedWithError:fm.error];
+                }        
+              }      
+            } else if ([fm.channel isEqualToString:UNSUBSCRIBE_CHANNEL]) {
+              NSLog(@"UNSUBSCRIBED FROM CHANNEL %@ ON FAYE", fm.subscription);
+            } else //if ([fm.channel isEqualToString:self.activeSubChannel]) {            
+              //
+              // SHOULD VALIDATE DATA - make sure it's a dict before proceeding:
+              //
+              if (fm.data && [fm.data isKindOfClass:[NSDictionary class]] && [fm.data count] > 0) {        
+                if (self.delegate != NULL && [self.delegate respondsToSelector:@selector(messageReceived:forChannel:)]) {
+                  NSNumber *dataSize = [NSNumber numberWithInt:[data length]];
+                  NSMutableDictionary *dataDict = [NSMutableDictionary dictionaryWithDictionary:fm.data];
+                  [dataDict setObject:dataSize forKey:@"_ds"];
+                  [self.delegate messageReceived:dataDict forChannel:fm.channel];
+                } else if (self.delegate != NULL && [self.delegate respondsToSelector:@selector(messageReceived:)]) {          
+                  [self.delegate messageReceived:fm.data];
+                } 
+              } else {
+                //if (self.delegate != NULL && [self.delegate respondsToSelector:@selector(notifyConnectionError:)]) {          
+                //    [self.delegate notifyConnectionError:@"Invalid Faye message body"];
+                //}
+              }
+          }
+      }
   }
-  for(NSDictionary *messageDict in messageArray) {
-    FayeMessage *fm = [[FayeMessage alloc] initWithDict:messageDict];    
-    
-    if ([fm.channel isEqualToString:HANDSHAKE_CHANNEL]) {    
-      if ([fm.successful boolValue]) {
-        self.fayeClientId = fm.clientId;        
-        if(self.delegate != NULL && [self.delegate respondsToSelector:@selector(connectedToServer)]) {
-          [self.delegate connectedToServer];
-        }
-        [self connect];  
-        // try to sub right after conn      
-        [self subscribe];
-      } else {
-        NSLog(@"ERROR WITH HANDSHAKE");
-      }    
-    } else if ([fm.channel isEqualToString:CONNECT_CHANNEL]) {      
-      if ([fm.successful boolValue]) {        
-        fayeConnected = YES;
-        [self connect];
-      } else {
-        NSLog(@"ERROR CONNECTING TO FAYE");
-      }
-    } else if ([fm.channel isEqualToString:DISCONNECT_CHANNEL]) {
-      if ([fm.successful boolValue]) {        
-        fayeConnected = NO;  
-        [self closeWebSocketConnection];
-        if(self.delegate != NULL && [self.delegate respondsToSelector:@selector(disconnectedFromServer)]) {
-          [self.delegate disconnectedFromServer];
-        }
-      } else {
-        NSLog(@"ERROR DISCONNECTING TO FAYE");
-      }
-    } else if ([fm.channel isEqualToString:SUBSCRIBE_CHANNEL]) {      
-      if ([fm.successful boolValue]) {
-        NSLog(@"SUBSCRIBED TO CHANNEL %@ ON FAYE", fm.subscription);        
-        if(self.delegate != NULL && [self.delegate respondsToSelector:@selector(subscribedToChannel:)]) {
-            [self.delegate subscribedToChannel:fm.subscription];
-        }
-      } else {
-        NSLog(@"ERROR SUBSCRIBING TO %@ WITH ERROR %@", fm.subscription, fm.error);
-        if(self.delegate != NULL && [self.delegate respondsToSelector:@selector(subscriptionFailedWithError:)]) {          
-          [self.delegate subscriptionFailedWithError:fm.error];
-        }        
-      }      
-    } else if ([fm.channel isEqualToString:UNSUBSCRIBE_CHANNEL]) {
-      NSLog(@"UNSUBSCRIBED FROM CHANNEL %@ ON FAYE", fm.subscription);
-    } else if ([fm.channel isEqualToString:self.activeSubChannel]) {            
-      if(fm.data) {        
-        if(self.delegate != NULL && [self.delegate respondsToSelector:@selector(messageReceived:)]) {          
-          [self.delegate messageReceived:fm.data];
-        }
-      }           
-    } else {
-      NSLog(@"NO MATCH FOR CHANNEL %@", fm.channel);      
-    }
-  }  
 }
 
 @end
